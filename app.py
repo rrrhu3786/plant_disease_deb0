@@ -1,11 +1,26 @@
-from flask import Flask, request, jsonify, render_template
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
+import tensorflow as tf
 import numpy as np
 from PIL import Image
 import io
 import os
 import gdown
+import gc
+
+# 🔒 تقييد استهلاك الذاكرة على GPU (إن وُجد)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        # أو لتحديد كمية معينة بالميغابايت (مثال: 1024MB = 1GB)
+        # tf.config.experimental.set_virtual_device_configuration(
+        #     gpus[0],
+        #     [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=1024)]
+        # )
+    except RuntimeError as e:
+        print("GPU memory limitation error:", e)
 
 app = Flask(__name__)
 
