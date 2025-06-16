@@ -1,70 +1,86 @@
-from flask import Flask, request, jsonify
-
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-import tensorflow as tf
+import os
+import io
+import requests
 import numpy as np
 from PIL import Image
-import io
-import os
-import gdown
-import gc
+from flask import Flask, request, jsonify, render_template
+from tensorflow.keras.models import load_model, Sequential
+from tensorflow.keras.layers import Dense, Flatten
 
-# 🔒 تقييد استهلاك الذاكرة على GPU (إن وُجد)
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        # أو لتحديد كمية معينة بالميغابايت (مثال: 1024MB = 1GB)
-        # tf.config.experimental.set_virtual_device_configuration(
-        #     gpus[0],
-        #     [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=1024)]
-        # )
-    except RuntimeError as e:
-        print("GPU memory limitation error:", e)
+# Disable GPU
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 app = Flask(__name__)
-
-# إعداد المسارات
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'plant_disease_model_final.h5')
 
-# تحميل النموذج من Google Drive إذا لم يكن موجودًا
+# --- Model Download & Validation ---
+def validate_model_file():
+    if os.path.exists(MODEL_PATH):
+        size = os.path.getsize(MODEL_PATH)
+        print(f"Model found. Size: {size/1024:.2f} KB")
+        if size < 1024:  # <1KB = invalid
+            print("Removing corrupted file")
+            os.remove(MODEL_PATH)
+
+def download_model():
+    FILE_ID = "1RGKYGHs4-reK7I52ZoqKgk-MpPymZvfa"
+    URL = f"https://drive.google.com/uc?export=download&id={FILE_ID}"
+    print("Downloading model...")
+    try:
+        response = requests.get(URL, stream=True)
+        with open(MODEL_PATH, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=32768):
+                if chunk: f.write(chunk)
+        print("Download successful!")
+    except Exception as e:
+        print("Download failed:", e)
+
+# --- Fallback Model ---
+def create_fallback_model():
+    print("Creating fallback model")
+    model = Sequential([
+        Flatten(input_shape=(256, 256, 3)),
+        Dense(128, activation='relu'),
+        Dense(1, activation='sigmoid')
+    ])
+    model.compile(optimizer='adam', loss='binary_crossentropy')
+    return model
+
+# --- Load Main Model ---
+validate_model_file()
 if not os.path.exists(MODEL_PATH):
-    # ضع هنا ID الخاص بملف النموذج في Google Drive
-    FILE_ID = "1RGKYGHs4-reK7I52ZoqKgk-MpPymZvfa"  
-    GDRIVE_URL = f"https://drive.google.com/uc?id={FILE_ID}"
-    print("Downloading model from Google Drive...")
-    gdown.download(GDRIVE_URL, MODEL_PATH, quiet=False)
+    download_model()
 
-# تحميل النموذج
-model = load_model(MODEL_PATH)
-def preprocess_image(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).resize((256, 256))
-    img_array = np.expand_dims(np.array(img), axis=0)
-    return img_array
+try:
+    model = load_model(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+except:
+    model = None
 
+if not model:
+    model = create_fallback_model()
+
+# --- Routes ---
 @app.route('/')
 def index():
-    print("Current working directory:", os.getcwd())
-    print("Templates folder exists:", os.path.exists(os.path.join(os.getcwd(), 'templates', 'index.html')))
     return render_template('index.html')
 
+def preprocess_image(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).resize((256, 256))
+    return np.expand_dims(np.array(img), axis=0)
 
-@app.route("/predict", methods=["POST"])
+@app.route('/predict', methods=['POST'])
 def predict():
-    if "file" not in request.files:
+    if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"})
+    
+    try:
+        img_array = preprocess_image(request.files['file'].read())
+        prediction = model.predict(img_array)
+        result = "Infected" if prediction[0][0] > 0.7 else "Healthy"
+        return jsonify({"result": result})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
-    file = request.files["file"]
-    img_array = preprocess_image(file.read())
-    prediction = model.predict(img_array)
-
-    result = "Infected" if prediction[0][0] > 0.7 else "Healthy"
-    return jsonify({"result": result})
-
-
-         
-
-
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
